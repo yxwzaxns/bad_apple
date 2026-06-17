@@ -9,7 +9,16 @@
   </head>
   <body>
     <main class="stage">
-      <canvas id="screen"></canvas>
+      <div id="screenWrap" class="screen-wrap">
+        <canvas id="screen"></canvas>
+        <button id="soundPrompt" class="sound-prompt" type="button" aria-label="Play sound" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M11 5 6 9H3v6h3l5 4V5Z"></path>
+            <path d="m19 9-6 6"></path>
+            <path d="m13 9 6 6"></path>
+          </svg>
+        </button>
+      </div>
       <audio id="audio" src="/audio" preload="auto"></audio>
     </main>
     <script src="/app.js"></script>

@@ -1,6 +1,8 @@
 const canvas = document.getElementById("screen");
 const ctx = canvas.getContext("2d", { alpha: false });
 const audio = document.getElementById("audio");
+const screenWrap = document.getElementById("screenWrap");
+const soundPrompt = document.getElementById("soundPrompt");
 
 const sourceCanvas = document.createElement("canvas");
 const sourceCtx = sourceCanvas.getContext("2d", { alpha: false });
@@ -16,6 +18,7 @@ let visualStartedAt = 0;
 let visualOffset = 0;
 let lastToggleAt = 0;
 let autoplayStarted = false;
+let initialSoundCheckComplete = false;
 
 function effectiveDuration() {
   return meta ? meta.durationMs / 1000 : 0;
@@ -46,6 +49,8 @@ function resizeCanvas() {
   const size = calculateCanvasSize(meta.sourceWidth, meta.sourceHeight, viewport());
   canvas.style.width = `${size.cssWidth}px`;
   canvas.style.height = `${size.cssHeight}px`;
+  screenWrap.style.width = `${size.cssWidth}px`;
+  screenWrap.style.height = `${size.cssHeight}px`;
   canvas.width = size.pixelWidth;
   canvas.height = size.pixelHeight;
   ctx.imageSmoothingEnabled = true;
@@ -122,10 +127,26 @@ function receiveChunk(buffer) {
     audio.play().then(() => {
       window.setTimeout(() => {
         audio.muted = false;
+        window.setTimeout(checkInitialSound, 120);
       }, 80);
     }).catch(() => {
       audio.muted = false;
+      checkInitialSound();
     });
+  }
+}
+
+function checkInitialSound() {
+  if (initialSoundCheckComplete) return;
+  initialSoundCheckComplete = true;
+  if (audio.paused || audio.muted) {
+    soundPrompt.hidden = false;
+  }
+}
+
+function hideSoundPromptIfAudible() {
+  if (!audio.paused && !audio.muted) {
+    soundPrompt.hidden = true;
   }
 }
 
@@ -201,6 +222,7 @@ function tick() {
 async function togglePlayback() {
   connect();
   audio.muted = false;
+  soundPrompt.hidden = true;
   if (visualPlaying) {
     visualOffset = playbackTime();
     visualPlaying = false;
@@ -215,9 +237,21 @@ async function togglePlayback() {
   }
 }
 
+async function playSoundFromPrompt() {
+  connect();
+  audio.muted = false;
+  audio.currentTime = Math.min(playbackTime(), effectiveDuration());
+  visualStartedAt = performance.now();
+  visualOffset = audio.currentTime;
+  visualPlaying = true;
+  await audio.play();
+  soundPrompt.hidden = true;
+}
+
 audio.addEventListener("play", () => {
   playing = true;
   visualPlaying = true;
+  hideSoundPromptIfAudible();
 });
 
 audio.addEventListener("pause", () => {
@@ -229,7 +263,16 @@ audio.addEventListener("pause", () => {
 
 audio.addEventListener("ended", () => {
   playing = false;
+  soundPrompt.hidden = true;
   drawFrame(meta.frames - 1);
+});
+
+audio.addEventListener("volumechange", hideSoundPromptIfAudible);
+
+soundPrompt.addEventListener("click", () => {
+  playSoundFromPrompt().catch((error) => {
+    console.error(error);
+  });
 });
 
 function handlePlaybackKey(event) {

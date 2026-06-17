@@ -25,8 +25,52 @@ body {
   background: #0a0a0a;
 }
 
+.screen-wrap {
+  position: relative;
+}
+
 #screen {
   display: block;
   image-rendering: auto;
   background: #fff;
+}
+
+.sound-prompt {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  cursor: pointer;
+}
+
+.sound-prompt[hidden] {
+  display: none;
+}
+
+.sound-prompt:hover,
+.sound-prompt:focus-visible {
+  background: rgba(0, 0, 0, 0.9);
+}
+
+.sound-prompt:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.sound-prompt svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
