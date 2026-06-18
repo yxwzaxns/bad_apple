@@ -1,57 +1,32 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Project
 
-This repository is currently empty. When adding code, use this layout:
+Go rewrite of the Bad Apple PHP demo. The app preprocesses JPEG frames into binary `0/1` data, embeds assets into one Go executable, serves a Canvas frontend, and streams frames over WebSocket.
 
-- `src/` for application source code and reusable modules.
-- `tests/` for automated tests that mirror `src/` paths.
-- `assets/` for static media, sample inputs, generated frames, or other non-code files.
-- `docs/` for design notes, usage docs, and contributor references.
+## Structure
 
-Prefer small modules. Name files after the behavior they contain, for example `src/frame_extractor.py` or `src/render-timeline.ts`.
+- `cmd/badapple/`: CLI entrypoint for `extract` and `serve`.
+- `src/extractor/`: image/audio preprocessing and frame file format.
+- `src/server/`: HTTP, metadata, and WebSocket frame streaming.
+- `web/`: embedded frontend.
+- `assets/source/`: source MP3 and frame images.
+- `assets/generated/`: generated `frames.badapple`.
+- `SMA_bad_apple-php_version/`: ignored legacy reference, do not edit.
 
-## Build, Test, and Development Commands
+## Commands
 
-No package manager, build system, or test runner is configured yet. Add commands to the relevant manifest when tooling is introduced, such as `package.json`, `pyproject.toml`, or `Makefile`.
+```sh
+go test ./...
+go run ./cmd/badapple extract --images assets/source/images --audio assets/source/ba.mp3 --out assets/generated/frames.badapple
+go build -o badapple ./cmd/badapple
+./badapple serve --addr :8081
+```
 
-Recommended command names:
+## Rules
 
-- `npm run dev` or `make dev` to run the project locally.
-- `npm test` or `make test` to run the full test suite.
-- `npm run build` or `make build` to produce distributable output.
-- `npm run lint` or `make lint` to run static checks.
-
-Keep this section updated whenever commands change.
-
-## Coding Style & Naming Conventions
-
-Use the dominant style of the language or framework added. Until tooling exists, follow these defaults:
-
-- Use 2 spaces for JavaScript, TypeScript, JSON, YAML, and Markdown.
-- Use 4 spaces for Python.
-- Use descriptive names for modules, functions, and tests.
-- Keep generated artifacts out of source directories unless they are intentionally versioned.
-
-If formatters or linters are added, document them here.
-
-## Testing Guidelines
-
-Add tests for new behavior as the codebase grows. Place tests under `tests/` and mirror the source path when practical. Use names such as `test_frame_extractor.py` or `render-timeline.test.ts`.
-
-Tests should cover core behavior, edge cases, and parsing or rendering logic likely to regress. Document fixtures in `tests/fixtures/`.
-
-## Commit & Pull Request Guidelines
-
-This directory has no Git history, so no project-specific commit convention exists yet. Use short, imperative messages, for example `Add frame extraction pipeline` or `Fix render timing drift`.
-
-Pull requests should include:
-
-- A concise summary of the change.
-- The commands run to verify it.
-- Screenshots or sample output for visual changes.
-- Links to related issues or notes when applicable.
-
-## Agent-Specific Instructions
-
-Before editing, inspect the current repository state and avoid overwriting user changes. Keep changes scoped to the requested task, update this guide when project tooling appears, and prefer repository-local commands over global assumptions.
+- Use global `go`; do not create project-local Go cache directories.
+- Rebuild after changing `web/`, `assets/source/ba.mp3`, or `assets/generated/frames.badapple` because they are embedded.
+- Keep the old PHP folder ignored and unchanged.
+- Keep visible frontend controls minimal; playback is keyboard-driven with `Space`/`Enter`.
+- Run `go test ./...` before committing code changes.
