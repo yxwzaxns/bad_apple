@@ -1,3 +1,12 @@
+---
+title: Bad Apple
+emoji: 🍎
+colorFrom: gray
+colorTo: gray
+sdk: docker
+pinned: false
+---
+
 # Bad Apple Go Rewrite
 
 This project is a Go rewrite of the PHP Bad Apple demo in `SMA_bad_apple-php_version/`.
