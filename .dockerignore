@@ -1,0 +1,8 @@
+.git
+.agents
+.codex
+.playwright-mcp
+SMA_bad_apple-php_version
+badapple
+*.png
+!web/*.png
