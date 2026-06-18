@@ -19,6 +19,7 @@ let visualOffset = 0;
 let lastToggleAt = 0;
 let autoplayStarted = false;
 let soundPromptTimer = 0;
+let initialSoundCheckComplete = false;
 let seekTargetFrame = null;
 let endedResting = false;
 const activePlaybackKeys = new Set();
@@ -132,11 +133,8 @@ function receiveChunk(buffer) {
   if (!autoplayStarted && frames.has(0)) {
     autoplayStarted = true;
     audio.muted = false;
-    audio.play().then(() => {
-      scheduleSoundPromptCheck();
-    }).catch(() => {
-      scheduleSoundPromptCheck();
-    });
+    scheduleSoundPromptCheck();
+    audio.play().catch(() => {});
   }
 }
 
@@ -152,14 +150,16 @@ function scheduleSoundPromptCheck() {
   if (soundPromptTimer) return;
   soundPromptTimer = window.setTimeout(() => {
     soundPromptTimer = 0;
+    initialSoundCheckComplete = true;
     updateSoundButton();
   }, soundPromptDelayMs);
 }
 
-function hideSoundPrompt() {
-  if (soundPromptTimer) {
+function hideSoundPrompt(clearPendingCheck = false) {
+  if (clearPendingCheck && soundPromptTimer) {
     window.clearTimeout(soundPromptTimer);
     soundPromptTimer = 0;
+    initialSoundCheckComplete = true;
   }
   soundPrompt.hidden = true;
 }
@@ -289,7 +289,7 @@ function tick() {
 async function togglePlayback() {
   connect();
   audio.muted = false;
-  hideSoundPrompt();
+  hideSoundPrompt(true);
   if (visualPlaying) {
     endedResting = false;
     visualOffset = playbackTime();
@@ -307,7 +307,7 @@ async function togglePlayback() {
     audio.currentTime = Math.min(visualOffset, effectiveDuration());
     await audio.play();
   }
-  hideSoundPrompt();
+  hideSoundPrompt(true);
 }
 
 async function playSoundFromPrompt() {
@@ -322,13 +322,15 @@ async function playSoundFromPrompt() {
   visualOffset = audio.currentTime;
   visualPlaying = true;
   await audio.play();
-  hideSoundPrompt();
+  hideSoundPrompt(true);
 }
 
 audio.addEventListener("play", () => {
   playing = true;
   visualPlaying = true;
-  hideSoundPrompt();
+  if (initialSoundCheckComplete) {
+    hideSoundPrompt();
+  }
 });
 
 audio.addEventListener("pause", () => {
