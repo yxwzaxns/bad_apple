@@ -64,7 +64,7 @@ func runServe(args []string) error {
 	fsFlags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fsFlags.SetOutput(os.Stderr)
 
-	addr := fsFlags.String("addr", ":8080", "HTTP listen address")
+	addr := fsFlags.String("addr", defaultServeAddr(), "HTTP listen address")
 	if err := fsFlags.Parse(args); err != nil {
 		return err
 	}
@@ -85,4 +85,11 @@ func runServe(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return server.Run(ctx, *addr, webFS, audio, frames)
+}
+
+func defaultServeAddr() string {
+	if port := os.Getenv("PORT"); port != "" {
+		return ":" + port
+	}
+	return ":8080"
 }
