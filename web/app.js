@@ -18,13 +18,12 @@ let visualStartedAt = 0;
 let visualOffset = 0;
 let lastToggleAt = 0;
 let autoplayStarted = false;
-let initialSoundCheckComplete = false;
 let soundPromptTimer = 0;
 let seekTargetFrame = null;
 let endedResting = false;
 const activePlaybackKeys = new Set();
 const endedPauseTime = 8;
-const soundPromptDelayMs = 1500;
+const soundPromptDelayMs = 1000;
 
 function effectiveDuration() {
   return meta ? meta.durationMs / 1000 : 0;
@@ -132,39 +131,42 @@ function receiveChunk(buffer) {
   }
   if (!autoplayStarted && frames.has(0)) {
     autoplayStarted = true;
-    audio.muted = true;
+    audio.muted = false;
     audio.play().then(() => {
-      window.setTimeout(() => {
-        audio.muted = false;
-        scheduleSoundPromptCheck();
-      }, 80);
+      scheduleSoundPromptCheck();
     }).catch(() => {
-      audio.muted = false;
       scheduleSoundPromptCheck();
     });
   }
 }
 
-function scheduleSoundPromptCheck() {
-  if (soundPromptTimer) return;
-  soundPromptTimer = window.setTimeout(checkInitialSound, soundPromptDelayMs);
-}
-
-function checkInitialSound() {
-  soundPromptTimer = 0;
-  initialSoundCheckComplete = true;
+function updateSoundButton() {
   if (audio.paused || audio.muted) {
     soundPrompt.hidden = false;
+    return;
   }
+  hideSoundPrompt();
+}
+
+function scheduleSoundPromptCheck() {
+  if (soundPromptTimer) return;
+  soundPromptTimer = window.setTimeout(() => {
+    soundPromptTimer = 0;
+    updateSoundButton();
+  }, soundPromptDelayMs);
+}
+
+function hideSoundPrompt() {
+  if (soundPromptTimer) {
+    window.clearTimeout(soundPromptTimer);
+    soundPromptTimer = 0;
+  }
+  soundPrompt.hidden = true;
 }
 
 function hideSoundPromptIfAudible() {
   if (!audio.paused && !audio.muted) {
-    if (soundPromptTimer) {
-      window.clearTimeout(soundPromptTimer);
-      soundPromptTimer = 0;
-    }
-    soundPrompt.hidden = true;
+    hideSoundPrompt();
   }
 }
 
@@ -186,7 +188,6 @@ function seekToProgress(progress) {
   if (shouldPlayAudio) {
     audio.play().catch((error) => {
       console.error(error);
-      scheduleSoundPromptCheck();
     });
   }
 
@@ -250,7 +251,7 @@ function finishPlayback() {
   visualOffset = restartTime;
   audio.pause();
   audio.currentTime = restartTime;
-  soundPrompt.hidden = true;
+  hideSoundPrompt();
 
   seekTargetFrame = frameForTime(restartTime);
   requestFrames(seekTargetFrame, 240, "frames", true);
@@ -288,7 +289,7 @@ function tick() {
 async function togglePlayback() {
   connect();
   audio.muted = false;
-  soundPrompt.hidden = true;
+  hideSoundPrompt();
   if (visualPlaying) {
     endedResting = false;
     visualOffset = playbackTime();
@@ -306,6 +307,7 @@ async function togglePlayback() {
     audio.currentTime = Math.min(visualOffset, effectiveDuration());
     await audio.play();
   }
+  hideSoundPrompt();
 }
 
 async function playSoundFromPrompt() {
@@ -320,13 +322,13 @@ async function playSoundFromPrompt() {
   visualOffset = audio.currentTime;
   visualPlaying = true;
   await audio.play();
-  soundPrompt.hidden = true;
+  hideSoundPrompt();
 }
 
 audio.addEventListener("play", () => {
   playing = true;
   visualPlaying = true;
-  hideSoundPromptIfAudible();
+  hideSoundPrompt();
 });
 
 audio.addEventListener("pause", () => {
