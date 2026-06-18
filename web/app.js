@@ -130,7 +130,7 @@ function receiveChunk(buffer) {
   } else if (frames.has(target) && (lastDrawn < 0 || visualPlaying)) {
     drawFrame(target);
   }
-  if (!autoplayStarted && frames.has(0)) {
+  if (!autoplayStarted && frames.size > 0) {
     autoplayStarted = true;
     audio.muted = false;
     scheduleSoundPromptCheck();
