@@ -19,6 +19,12 @@ let visualOffset = 0;
 let lastToggleAt = 0;
 let autoplayStarted = false;
 let initialSoundCheckComplete = false;
+let soundPromptTimer = 0;
+let seekTargetFrame = null;
+let endedResting = false;
+const activePlaybackKeys = new Set();
+const endedPauseTime = 8;
+const soundPromptDelayMs = 1500;
 
 function effectiveDuration() {
   return meta ? meta.durationMs / 1000 : 0;
@@ -93,10 +99,10 @@ function connect() {
   });
 }
 
-function requestFrames(from, chunk = 240, type = "frames") {
+function requestFrames(from, chunk = 240, type = "frames", force = false) {
   if (!meta || !socket || socket.readyState !== WebSocket.OPEN) return;
   const clampedFrom = Math.max(0, Math.min(meta.frames - 1, from));
-  if (clampedFrom < requestedUntil && type !== "hello") return;
+  if (!force && clampedFrom < requestedUntil && type !== "hello") return;
   socket.send(JSON.stringify({
     type,
     viewport: viewport(),
@@ -118,7 +124,10 @@ function receiveChunk(buffer) {
     offset += meta.frameBytes;
   }
   const target = frameForTime(playbackTime());
-  if (frames.has(target) && (lastDrawn < 0 || visualPlaying)) {
+  if (seekTargetFrame !== null && frames.has(seekTargetFrame)) {
+    drawFrame(seekTargetFrame);
+    seekTargetFrame = null;
+  } else if (frames.has(target) && (lastDrawn < 0 || visualPlaying)) {
     drawFrame(target);
   }
   if (!autoplayStarted && frames.has(0)) {
@@ -127,17 +136,22 @@ function receiveChunk(buffer) {
     audio.play().then(() => {
       window.setTimeout(() => {
         audio.muted = false;
-        window.setTimeout(checkInitialSound, 120);
+        scheduleSoundPromptCheck();
       }, 80);
     }).catch(() => {
       audio.muted = false;
-      checkInitialSound();
+      scheduleSoundPromptCheck();
     });
   }
 }
 
+function scheduleSoundPromptCheck() {
+  if (soundPromptTimer) return;
+  soundPromptTimer = window.setTimeout(checkInitialSound, soundPromptDelayMs);
+}
+
 function checkInitialSound() {
-  if (initialSoundCheckComplete) return;
+  soundPromptTimer = 0;
   initialSoundCheckComplete = true;
   if (audio.paused || audio.muted) {
     soundPrompt.hidden = false;
@@ -146,7 +160,41 @@ function checkInitialSound() {
 
 function hideSoundPromptIfAudible() {
   if (!audio.paused && !audio.muted) {
+    if (soundPromptTimer) {
+      window.clearTimeout(soundPromptTimer);
+      soundPromptTimer = 0;
+    }
     soundPrompt.hidden = true;
+  }
+}
+
+function seekToProgress(progress) {
+  if (!meta) return;
+  const duration = effectiveDuration();
+  if (duration <= 0) return;
+  const targetTime = Math.max(0, Math.min(1, progress)) * duration;
+  const targetFrame = frameForTime(targetTime);
+  const shouldPlayAudio = visualPlaying || !audio.paused;
+
+  connect();
+  endedResting = false;
+  audio.currentTime = targetTime;
+  visualOffset = targetTime;
+  if (visualPlaying) {
+    visualStartedAt = performance.now();
+  }
+  if (shouldPlayAudio) {
+    audio.play().catch((error) => {
+      console.error(error);
+      scheduleSoundPromptCheck();
+    });
+  }
+
+  seekTargetFrame = targetFrame;
+  requestFrames(targetFrame, 240, "frames", true);
+  if (frames.has(targetFrame)) {
+    drawFrame(targetFrame);
+    seekTargetFrame = null;
   }
 }
 
@@ -193,24 +241,42 @@ function drawFrame(index) {
   return true;
 }
 
+function finishPlayback() {
+  const duration = effectiveDuration();
+  const restartTime = duration > 0 ? Math.min(endedPauseTime, duration) : 0;
+  playing = false;
+  visualPlaying = false;
+  endedResting = true;
+  visualOffset = restartTime;
+  audio.pause();
+  audio.currentTime = restartTime;
+  soundPrompt.hidden = true;
+
+  seekTargetFrame = frameForTime(restartTime);
+  requestFrames(seekTargetFrame, 240, "frames", true);
+  if (frames.has(seekTargetFrame)) {
+    drawFrame(seekTargetFrame);
+    seekTargetFrame = null;
+  }
+}
+
 function tick() {
   if (meta) {
     const current = playbackTime();
     if (visualPlaying && effectiveDuration() > 0 && current >= effectiveDuration()) {
-      visualPlaying = false;
-      visualOffset = effectiveDuration();
-      drawFrame(meta.frames - 1);
+      finishPlayback();
     }
     if (!audio.paused && effectiveDuration() > 0 && audio.currentTime >= effectiveDuration()) {
-      audio.pause();
-      drawFrame(meta.frames - 1);
-      audio.currentTime = effectiveDuration();
+      finishPlayback();
     }
     const target = frameForTime(current);
     if (!frames.has(target)) {
       requestFrames(target, 240);
     } else if (target !== lastDrawn) {
       drawFrame(target);
+      if (target === seekTargetFrame) {
+        seekTargetFrame = null;
+      }
     }
     if (target + 120 > requestedUntil) {
       requestFrames(requestedUntil, 240);
@@ -224,12 +290,17 @@ async function togglePlayback() {
   audio.muted = false;
   soundPrompt.hidden = true;
   if (visualPlaying) {
+    endedResting = false;
     visualOffset = playbackTime();
     visualPlaying = false;
     if (!audio.paused) {
       audio.pause();
     }
   } else {
+    if (endedResting) {
+      endedResting = false;
+      visualOffset = 0;
+    }
     visualStartedAt = performance.now();
     visualPlaying = true;
     audio.currentTime = Math.min(visualOffset, effectiveDuration());
@@ -240,6 +311,10 @@ async function togglePlayback() {
 async function playSoundFromPrompt() {
   connect();
   audio.muted = false;
+  if (endedResting) {
+    endedResting = false;
+    visualOffset = 0;
+  }
   audio.currentTime = Math.min(playbackTime(), effectiveDuration());
   visualStartedAt = performance.now();
   visualOffset = audio.currentTime;
@@ -262,22 +337,44 @@ audio.addEventListener("pause", () => {
 });
 
 audio.addEventListener("ended", () => {
-  playing = false;
-  soundPrompt.hidden = true;
-  drawFrame(meta.frames - 1);
+  finishPlayback();
 });
 
 audio.addEventListener("volumechange", hideSoundPromptIfAudible);
 
-soundPrompt.addEventListener("click", () => {
+soundPrompt.addEventListener("click", (event) => {
+  event.stopPropagation();
   playSoundFromPrompt().catch((error) => {
     console.error(error);
   });
 });
 
-function handlePlaybackKey(event) {
-  if (event.key !== " " && event.key !== "Enter") return;
+screenWrap.addEventListener("click", (event) => {
+  const rect = screenWrap.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+
+  if (y >= rect.height * 0.75) {
+    seekToProgress(x / rect.width);
+    return;
+  }
+
+  togglePlayback().catch((error) => {
+    console.error(error);
+  });
+});
+
+function isPlaybackKey(event) {
+  return event.key === " " || event.key === "Enter";
+}
+
+function handlePlaybackKeyDown(event) {
+  if (!isPlaybackKey(event)) return;
   event.preventDefault();
+  if (event.repeat || activePlaybackKeys.has(event.code)) return;
+  activePlaybackKeys.add(event.code);
+
   const now = performance.now();
   if (now - lastToggleAt < 150) return;
   lastToggleAt = now;
@@ -286,8 +383,17 @@ function handlePlaybackKey(event) {
   });
 }
 
-window.addEventListener("keydown", handlePlaybackKey);
-window.addEventListener("keyup", handlePlaybackKey);
+function handlePlaybackKeyUp(event) {
+  if (!isPlaybackKey(event)) return;
+  event.preventDefault();
+  activePlaybackKeys.delete(event.code);
+}
+
+window.addEventListener("keydown", handlePlaybackKeyDown);
+window.addEventListener("keyup", handlePlaybackKeyUp);
+window.addEventListener("blur", () => {
+  activePlaybackKeys.clear();
+});
 
 window.addEventListener("resize", resizeCanvas);
 window.addEventListener("orientationchange", resizeCanvas);
