@@ -53,7 +53,9 @@ const activePlaybackKeys = new Set();
 const endedPauseTime = 8;
 const soundPromptDelayMs = 1000;
 const dotTileSize = 32;
-const dotDiameterRatio = 0.74;
+const dotDiameterRatio = 0.7;
+const dotFlowCellsPerSecondX = 0.42;
+const dotFlowCellsPerSecondY = 0.28;
 const maxRenderDpr = 2;
 const maxRenderPixels = 8_000_000;
 const initialBufferFrames = 90;
@@ -350,8 +352,10 @@ function resizeCanvas() {
   canvas.height = size.pixelHeight;
   dotLayerCanvas.width = size.pixelWidth;
   dotLayerCanvas.height = size.pixelHeight;
-  dotMaskCanvas.width = size.pixelWidth;
-  dotMaskCanvas.height = size.pixelHeight;
+  const cellWidth = size.pixelWidth / meta.sourceWidth;
+  const cellHeight = size.pixelHeight / meta.sourceHeight;
+  dotMaskCanvas.width = size.pixelWidth + Math.ceil(cellWidth) + 2;
+  dotMaskCanvas.height = size.pixelHeight + Math.ceil(cellHeight) + 2;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   rebuildDotMask();
@@ -371,8 +375,8 @@ function scheduleResize() {
 function rebuildDotMask() {
   if (!meta || dotMaskCanvas.width === 0 || dotMaskCanvas.height === 0) return;
 
-  const cellWidth = dotMaskCanvas.width / meta.sourceWidth;
-  const cellHeight = dotMaskCanvas.height / meta.sourceHeight;
+  const cellWidth = dotLayerCanvas.width / meta.sourceWidth;
+  const cellHeight = dotLayerCanvas.height / meta.sourceHeight;
   const pattern = dotMaskCtx.createPattern(dotTileCanvas, "repeat");
   if (!pattern) return;
 
@@ -387,6 +391,17 @@ function rebuildDotMask() {
     dotMaskCanvas.height * dotTileSize / cellHeight,
   );
   dotMaskCtx.restore();
+}
+
+function dotFlowOffset(index) {
+  if (!meta || meta.fps <= 0) return { x: 0, y: 0 };
+  const seconds = index / meta.fps;
+  const cellWidth = dotLayerCanvas.width / meta.sourceWidth;
+  const cellHeight = dotLayerCanvas.height / meta.sourceHeight;
+  return {
+    x: (seconds * dotFlowCellsPerSecondX * cellWidth) % cellWidth,
+    y: (seconds * dotFlowCellsPerSecondY * cellHeight) % cellHeight,
+  };
 }
 
 async function loadMeta() {
@@ -677,7 +692,20 @@ function drawFrame(index) {
   dotLayerCtx.imageSmoothingEnabled = false;
   dotLayerCtx.drawImage(sourceCanvas, 0, 0, dotLayerCanvas.width, dotLayerCanvas.height);
   dotLayerCtx.globalCompositeOperation = "destination-in";
-  dotLayerCtx.drawImage(dotMaskCanvas, 0, 0);
+  const flow = dotFlowOffset(index);
+  dotLayerCtx.imageSmoothingEnabled = true;
+  dotLayerCtx.imageSmoothingQuality = "high";
+  dotLayerCtx.drawImage(
+    dotMaskCanvas,
+    flow.x,
+    flow.y,
+    dotLayerCanvas.width,
+    dotLayerCanvas.height,
+    0,
+    0,
+    dotLayerCanvas.width,
+    dotLayerCanvas.height,
+  );
   dotLayerCtx.globalCompositeOperation = "source-over";
 
   ctx.fillStyle = frameBackgroundIsBlack(packed, meta.sourceWidth, meta.sourceHeight) ? "#000" : "#fff";
@@ -949,7 +977,13 @@ loadMeta()
 
 buildDotTile();
 
-window.badAppleSizing = { calculateCanvasSize, frameBackgroundIsBlack, stageViewport, viewport };
+window.badAppleSizing = {
+  calculateCanvasSize,
+  dotFlowOffset,
+  frameBackgroundIsBlack,
+  stageViewport,
+  viewport,
+};
 window.badApplePlaybackState = () => ({
   appReady,
   buffering: playbackBuffering,
