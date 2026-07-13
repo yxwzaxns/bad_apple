@@ -1,11 +1,18 @@
 const canvas = document.getElementById("screen");
 const ctx = canvas.getContext("2d", { alpha: false });
 const audio = document.getElementById("audio");
+const stage = document.querySelector(".stage");
 const screenWrap = document.getElementById("screenWrap");
 const soundPrompt = document.getElementById("soundPrompt");
 
 const sourceCanvas = document.createElement("canvas");
 const sourceCtx = sourceCanvas.getContext("2d", { alpha: false });
+const dotLayerCanvas = document.createElement("canvas");
+const dotLayerCtx = dotLayerCanvas.getContext("2d");
+const dotMaskCanvas = document.createElement("canvas");
+const dotMaskCtx = dotMaskCanvas.getContext("2d");
+const dotTileCanvas = document.createElement("canvas");
+const dotTileCtx = dotTileCanvas.getContext("2d");
 
 let meta = null;
 let socket = null;
@@ -22,19 +29,58 @@ let soundPromptTimer = 0;
 let initialSoundCheckComplete = false;
 let seekTargetFrame = null;
 let endedResting = false;
+let sourceImage = null;
+let resizeFrame = 0;
 const activePlaybackKeys = new Set();
 const endedPauseTime = 8;
 const soundPromptDelayMs = 1000;
+const dotTileSize = 32;
+const dotDiameterRatio = 0.74;
+const maxRenderDpr = 2;
+const maxRenderPixels = 8_000_000;
+
+function buildDotTile() {
+  dotTileCanvas.width = dotTileSize;
+  dotTileCanvas.height = dotTileSize;
+  dotTileCtx.clearRect(0, 0, dotTileSize, dotTileSize);
+  dotTileCtx.fillStyle = "#fff";
+  dotTileCtx.beginPath();
+  dotTileCtx.arc(
+    dotTileSize / 2,
+    dotTileSize / 2,
+    dotTileSize * dotDiameterRatio / 2,
+    0,
+    Math.PI * 2,
+  );
+  dotTileCtx.fill();
+}
 
 function effectiveDuration() {
   return meta ? meta.durationMs / 1000 : 0;
 }
 
 function viewport() {
+  const visualViewport = window.visualViewport;
   return {
-    w: window.innerWidth,
-    h: window.innerHeight,
+    w: visualViewport ? visualViewport.width : window.innerWidth,
+    h: visualViewport ? visualViewport.height : window.innerHeight,
     dpr: window.devicePixelRatio || 1,
+  };
+}
+
+function syncViewportSize(view) {
+  document.documentElement.style.setProperty("--app-width", `${Math.round(view.w)}px`);
+  document.documentElement.style.setProperty("--app-height", `${Math.round(view.h)}px`);
+}
+
+function stageViewport(view) {
+  const styles = window.getComputedStyle(stage);
+  const horizontalPadding = parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight);
+  const verticalPadding = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+  return {
+    w: Math.max(1, view.w - horizontalPadding),
+    h: Math.max(1, view.h - verticalPadding),
+    dpr: view.dpr,
   };
 }
 
@@ -42,28 +88,75 @@ function calculateCanvasSize(sourceWidth, sourceHeight, view) {
   const scale = Math.min(view.w / sourceWidth, view.h / sourceHeight);
   const cssWidth = Math.max(1, Math.floor(sourceWidth * scale));
   const cssHeight = Math.max(1, Math.floor(sourceHeight * scale));
+  const pixelBudgetDpr = Math.sqrt(maxRenderPixels / (cssWidth * cssHeight));
+  const renderDpr = Math.max(0.5, Math.min(view.dpr, maxRenderDpr, pixelBudgetDpr));
   return {
     cssWidth,
     cssHeight,
-    pixelWidth: Math.max(1, Math.floor(cssWidth * view.dpr)),
-    pixelHeight: Math.max(1, Math.floor(cssHeight * view.dpr)),
+    pixelWidth: Math.max(1, Math.floor(cssWidth * renderDpr)),
+    pixelHeight: Math.max(1, Math.floor(cssHeight * renderDpr)),
+    renderDpr,
   };
 }
 
 function resizeCanvas() {
+  const view = viewport();
+  syncViewportSize(view);
   if (!meta) return;
-  const size = calculateCanvasSize(meta.sourceWidth, meta.sourceHeight, viewport());
+  const size = calculateCanvasSize(meta.sourceWidth, meta.sourceHeight, stageViewport(view));
   canvas.style.width = `${size.cssWidth}px`;
   canvas.style.height = `${size.cssHeight}px`;
   screenWrap.style.width = `${size.cssWidth}px`;
   screenWrap.style.height = `${size.cssHeight}px`;
+  if (
+    canvas.width === size.pixelWidth
+    && canvas.height === size.pixelHeight
+    && dotLayerCanvas.width === size.pixelWidth
+    && dotLayerCanvas.height === size.pixelHeight
+  ) {
+    return;
+  }
   canvas.width = size.pixelWidth;
   canvas.height = size.pixelHeight;
+  dotLayerCanvas.width = size.pixelWidth;
+  dotLayerCanvas.height = size.pixelHeight;
+  dotMaskCanvas.width = size.pixelWidth;
+  dotMaskCanvas.height = size.pixelHeight;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
+  rebuildDotMask();
   if (lastDrawn >= 0 && frames.has(lastDrawn)) {
     drawFrame(lastDrawn);
   }
+}
+
+function scheduleResize() {
+  if (resizeFrame) return;
+  resizeFrame = window.requestAnimationFrame(() => {
+    resizeFrame = 0;
+    resizeCanvas();
+  });
+}
+
+function rebuildDotMask() {
+  if (!meta || dotMaskCanvas.width === 0 || dotMaskCanvas.height === 0) return;
+
+  const cellWidth = dotMaskCanvas.width / meta.sourceWidth;
+  const cellHeight = dotMaskCanvas.height / meta.sourceHeight;
+  const pattern = dotMaskCtx.createPattern(dotTileCanvas, "repeat");
+  if (!pattern) return;
+
+  dotMaskCtx.clearRect(0, 0, dotMaskCanvas.width, dotMaskCanvas.height);
+  dotMaskCtx.save();
+  dotMaskCtx.scale(cellWidth / dotTileSize, cellHeight / dotTileSize);
+  dotMaskCtx.fillStyle = pattern;
+  dotMaskCtx.fillRect(
+    0,
+    0,
+    dotMaskCanvas.width * dotTileSize / cellWidth,
+    dotMaskCanvas.height * dotTileSize / cellHeight,
+  );
+  dotMaskCtx.restore();
 }
 
 async function loadMeta() {
@@ -73,6 +166,7 @@ async function loadMeta() {
   window.__badAppleDebugMeta = meta;
   sourceCanvas.width = meta.sourceWidth;
   sourceCanvas.height = meta.sourceHeight;
+  sourceImage = sourceCtx.createImageData(meta.sourceWidth, meta.sourceHeight);
   resizeCanvas();
 }
 
@@ -217,15 +311,36 @@ function playbackTime() {
   return visualOffset;
 }
 
+function packedBit(packed, bit) {
+  return (packed[bit >> 3] & (1 << (7 - (bit & 7)))) !== 0;
+}
+
+function frameBackgroundIsBlack(packed, width, height) {
+  let black = 0;
+  let sampled = 0;
+
+  for (let x = 0; x < width; x += 1) {
+    if (packedBit(packed, x)) black += 1;
+    if (height > 1 && packedBit(packed, (height - 1) * width + x)) black += 1;
+    sampled += height > 1 ? 2 : 1;
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    if (packedBit(packed, y * width)) black += 1;
+    if (width > 1 && packedBit(packed, y * width + width - 1)) black += 1;
+    sampled += width > 1 ? 2 : 1;
+  }
+
+  return black * 2 >= sampled;
+}
+
 function drawFrame(index) {
   const packed = frames.get(index);
-  if (!packed || !meta) return false;
+  if (!packed || !meta || !sourceImage) return false;
 
-  const image = sourceCtx.createImageData(meta.sourceWidth, meta.sourceHeight);
-  const pixels = image.data;
+  const pixels = sourceImage.data;
   const total = meta.sourceWidth * meta.sourceHeight;
   for (let bit = 0; bit < total; bit += 1) {
-    const on = (packed[bit >> 3] & (1 << (7 - (bit & 7)))) !== 0;
+    const on = packedBit(packed, bit);
     const color = on ? 0 : 255;
     const p = bit * 4;
     pixels[p] = color;
@@ -234,10 +349,19 @@ function drawFrame(index) {
     pixels[p + 3] = 255;
   }
 
-  sourceCtx.putImageData(image, 0, 0);
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(sourceCanvas, 0, 0, canvas.width, canvas.height);
+  sourceCtx.putImageData(sourceImage, 0, 0);
+
+  dotLayerCtx.clearRect(0, 0, dotLayerCanvas.width, dotLayerCanvas.height);
+  dotLayerCtx.globalCompositeOperation = "source-over";
+  dotLayerCtx.imageSmoothingEnabled = false;
+  dotLayerCtx.drawImage(sourceCanvas, 0, 0, dotLayerCanvas.width, dotLayerCanvas.height);
+  dotLayerCtx.globalCompositeOperation = "destination-in";
+  dotLayerCtx.drawImage(dotMaskCanvas, 0, 0);
+  dotLayerCtx.globalCompositeOperation = "source-over";
+
+  ctx.fillStyle = frameBackgroundIsBlack(packed, meta.sourceWidth, meta.sourceHeight) ? "#000" : "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(dotLayerCanvas, 0, 0);
   lastDrawn = index;
   return true;
 }
@@ -399,8 +523,14 @@ window.addEventListener("blur", () => {
   activePlaybackKeys.clear();
 });
 
-window.addEventListener("resize", resizeCanvas);
-window.addEventListener("orientationchange", resizeCanvas);
+window.addEventListener("resize", scheduleResize);
+window.addEventListener("orientationchange", scheduleResize);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", scheduleResize);
+  window.visualViewport.addEventListener("scroll", scheduleResize);
+}
+
+syncViewportSize(viewport());
 
 loadMeta()
   .then(() => {
@@ -412,4 +542,6 @@ loadMeta()
     console.error(error);
   });
 
-window.badAppleSizing = { calculateCanvasSize };
+buildDotTile();
+
+window.badAppleSizing = { calculateCanvasSize, frameBackgroundIsBlack, stageViewport, viewport };

@@ -96,7 +96,8 @@ After changing any embedded frontend or asset file, rebuild the executable befor
 - The browser may block unmuted audio autoplay. The frontend still attempts autoplay, but if the browser blocks it, the animation continues silently.
 - Press `Space` or `Enter` to play or pause. When audio starts after a key press, it seeks to the current animation position before playing.
 - Playback uses the effective media duration from metadata, not the MP3 container duration. When the effective duration is reached, the animation stops on the last frame.
-- Canvas scaling uses high-quality smoothing instead of pixelated nearest-neighbor rendering, reducing jagged black/white edges.
+- Canvas rendering applies a circular dot mask aligned with the source pixel grid. The dominant color around each frame's border stays solid while the contrasting foreground is rendered as dots, so black-on-white and white-on-black scenes both retain their polarity.
+- The stage follows the browser's visual viewport, preserves the source aspect ratio without cropping, accounts for mobile safe areas, and caps the internal render resolution on high-DPI displays.
 
 ## Source Data
 
