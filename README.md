@@ -10,6 +10,7 @@ pinned: false
 # Bad Apple
 
 ![Code by AI](https://img.shields.io/badge/Code%20by-AI-8A2BE2?style=for-the-badge)
+[![Live Demo](https://img.shields.io/badge/Live-Demo-2ea44f?style=for-the-badge)](https://yxwzaxns-badapple.hf.space/)
 
 A Go rewrite of the Bad Apple PHP demo. It converts JPEG frames into compact binary data, embeds the animation, audio, and web frontend into a single executable, and streams frames to the browser over WebSocket.
 
