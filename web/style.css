@@ -36,6 +36,136 @@ body {
   background: #000;
 }
 
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding:
+    max(24px, env(safe-area-inset-top))
+    max(24px, env(safe-area-inset-right))
+    max(24px, env(safe-area-inset-bottom))
+    max(24px, env(safe-area-inset-left));
+  background: #050505;
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 280ms ease, visibility 280ms ease;
+}
+
+.loading-overlay.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.loading-panel {
+  width: min(360px, 82vw);
+  text-align: center;
+}
+
+.loading-title {
+  margin: 0 0 24px;
+  color: #fff;
+  font-size: clamp(1.1rem, 4vw, 1.45rem);
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  text-indent: 0.28em;
+}
+
+.loading-status {
+  min-height: 1.4em;
+  margin: 0 0 10px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.82rem;
+}
+
+.loading-progress {
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.36);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.loading-bar {
+  position: relative;
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #fff;
+  transition: width 220ms ease;
+}
+
+.loading-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.22), transparent);
+  transform: translateX(-100%);
+  animation: loading-sheen 1.4s ease-in-out infinite;
+}
+
+.loading-overlay.has-error .loading-status {
+  color: #fff;
+}
+
+.loading-overlay.has-error .loading-bar {
+  background: #b8b8b8;
+}
+
+.loading-overlay.has-error .loading-bar::after {
+  animation: none;
+}
+
+.loading-percent {
+  margin: 9px 0 0;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.loading-retry {
+  margin-top: 18px;
+  padding: 7px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  border-radius: 999px;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.loading-retry:hover,
+.loading-retry:focus-visible {
+  background: #fff;
+  color: #000;
+}
+
+.loading-retry:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+}
+
+@keyframes loading-sheen {
+  55%,
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-overlay,
+  .loading-bar {
+    transition: none;
+  }
+
+  .loading-bar::after {
+    animation: none;
+  }
+}
+
 .screen-wrap {
   position: relative;
   flex: none;

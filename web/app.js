@@ -4,6 +4,12 @@ const audio = document.getElementById("audio");
 const stage = document.querySelector(".stage");
 const screenWrap = document.getElementById("screenWrap");
 const soundPrompt = document.getElementById("soundPrompt");
+const loadingOverlay = document.getElementById("loadingOverlay");
+const loadingStatus = document.getElementById("loadingStatus");
+const loadingProgress = document.getElementById("loadingProgress");
+const loadingBar = document.getElementById("loadingBar");
+const loadingPercent = document.getElementById("loadingPercent");
+const loadingRetry = document.getElementById("loadingRetry");
 
 const sourceCanvas = document.createElement("canvas");
 const sourceCtx = sourceCanvas.getContext("2d", { alpha: false });
@@ -17,20 +23,32 @@ const dotTileCtx = dotTileCanvas.getContext("2d");
 let meta = null;
 let socket = null;
 let frames = new Map();
+let frameData = null;
+let loadedFrameCount = 0;
+let frameTransport = "pending";
+let frameStreamComplete = false;
 let requestedUntil = 0;
 let lastDrawn = -1;
-let playing = false;
-let visualPlaying = true;
+let visualPlaying = false;
 let visualStartedAt = 0;
 let visualOffset = 0;
 let lastToggleAt = 0;
-let autoplayStarted = false;
 let soundPromptTimer = 0;
 let initialSoundCheckComplete = false;
 let seekTargetFrame = null;
 let endedResting = false;
 let sourceImage = null;
 let resizeFrame = 0;
+let reconnectTimer = 0;
+let appReady = false;
+let startScheduled = false;
+let loadingFailed = false;
+let playbackBuffering = false;
+let resumeAfterBuffering = false;
+let bufferingReason = "frames";
+let audioCanPlayAt = 0;
+let audioReadyTimer = 0;
+let audioWaitingTimer = 0;
 const activePlaybackKeys = new Set();
 const endedPauseTime = 8;
 const soundPromptDelayMs = 1000;
@@ -38,6 +56,218 @@ const dotTileSize = 32;
 const dotDiameterRatio = 0.74;
 const maxRenderDpr = 2;
 const maxRenderPixels = 8_000_000;
+const initialBufferFrames = 90;
+const initialChunkFrames = 30;
+const resumeBufferFrames = 45;
+const startupAudioBufferSeconds = 8;
+const audioResumeBufferSeconds = 3;
+const maxAudioBufferWaitMs = 12000;
+const loadingState = {
+  interface: true,
+  metadata: false,
+  audio: false,
+  transport: false,
+  frames: 0,
+};
+const loadingWeights = {
+  interface: 5,
+  metadata: 20,
+  audio: 25,
+  transport: 15,
+  frames: 35,
+};
+
+function hasFrame(index) {
+  return (frameData !== null && index >= 0 && index < loadedFrameCount) || frames.has(index);
+}
+
+function getFrame(index) {
+  if (frameData !== null && index >= 0 && index < loadedFrameCount) {
+    const start = index * meta.frameBytes;
+    return frameData.subarray(start, start + meta.frameBytes);
+  }
+  return frames.get(index);
+}
+
+function availableFramesFrom(index, limit) {
+  let count = 0;
+  while (count < limit && index + count < meta.frames && hasFrame(index + count)) {
+    count += 1;
+  }
+  return count;
+}
+
+function bufferedAudioSeconds() {
+  const current = audio.currentTime;
+  for (let i = 0; i < audio.buffered.length; i += 1) {
+    if (audio.buffered.start(i) <= current + 0.1 && audio.buffered.end(i) >= current) {
+      return audio.buffered.end(i) - current;
+    }
+  }
+  return 0;
+}
+
+function bufferedInitialFrames() {
+  let count = 0;
+  while (count < initialBufferFrames && hasFrame(count)) {
+    count += 1;
+  }
+  return count;
+}
+
+function loadingValue() {
+  const frameProgress = Math.min(1, loadingState.frames / initialBufferFrames);
+  return Math.round(
+    (loadingState.interface ? loadingWeights.interface : 0)
+    + (loadingState.metadata ? loadingWeights.metadata : 0)
+    + (loadingState.audio ? loadingWeights.audio : 0)
+    + (loadingState.transport ? loadingWeights.transport : 0)
+    + frameProgress * loadingWeights.frames,
+  );
+}
+
+function refreshLoadingStatus() {
+  if (loadingFailed || startScheduled || appReady) return;
+  if (!loadingState.metadata) {
+    loadingStatus.textContent = "Loading playback metadata…";
+  } else if (!loadingState.audio) {
+    loadingStatus.textContent = "Preparing audio…";
+  } else if (!loadingState.transport) {
+    loadingStatus.textContent = "Opening frame stream…";
+  } else if (loadingState.frames < initialBufferFrames) {
+    loadingStatus.textContent = `Buffering animation ${loadingState.frames} / ${initialBufferFrames}…`;
+  }
+}
+
+function renderLoadingProgress() {
+  const value = loadingValue();
+  loadingBar.style.width = `${value}%`;
+  loadingPercent.textContent = `${value}%`;
+  loadingProgress.setAttribute("aria-valuenow", String(value));
+  refreshLoadingStatus();
+}
+
+function markLoadingReady(resource) {
+  if (loadingState[resource]) return;
+  loadingState[resource] = true;
+  renderLoadingProgress();
+  maybeStartPlayback();
+}
+
+function updateFrameLoading() {
+  loadingState.frames = bufferedInitialFrames();
+  renderLoadingProgress();
+  maybeStartPlayback();
+}
+
+function showLoadingError(message) {
+  loadingFailed = true;
+  visualPlaying = false;
+  audio.pause();
+  loadingOverlay.classList.add("has-error");
+  loadingStatus.textContent = message;
+  loadingOverlay.setAttribute("aria-busy", "false");
+  loadingRetry.hidden = false;
+}
+
+function maybeStartPlayback() {
+  if (
+    loadingFailed
+    || startScheduled
+    || appReady
+    || !loadingState.metadata
+    || !loadingState.audio
+    || !loadingState.transport
+    || loadingState.frames < initialBufferFrames
+  ) {
+    return;
+  }
+
+  startScheduled = true;
+  drawFrame(0);
+  loadingBar.style.width = "100%";
+  loadingPercent.textContent = "100%";
+  loadingProgress.setAttribute("aria-valuenow", "100");
+  loadingStatus.textContent = "Ready";
+  window.setTimeout(startPlayback, 300);
+}
+
+function startPlayback() {
+  if (appReady || loadingFailed) return;
+  appReady = true;
+  loadingOverlay.setAttribute("aria-busy", "false");
+  loadingOverlay.classList.add("is-hidden");
+  visualOffset = 0;
+  visualStartedAt = performance.now();
+  visualPlaying = true;
+  endedResting = false;
+  audio.currentTime = 0;
+  audio.muted = false;
+  if (frameTransport === "websocket") {
+    requestFrames(initialBufferFrames, 120);
+  }
+  scheduleSoundPromptCheck();
+  audio.play().catch(() => {});
+}
+
+function showPlaybackBuffering(currentTime, reason = "frames") {
+  if (playbackBuffering || !appReady) return;
+  playbackBuffering = true;
+  bufferingReason = reason;
+  resumeAfterBuffering = visualPlaying || !audio.paused;
+  visualOffset = currentTime;
+  visualPlaying = false;
+  audio.pause();
+  loadingOverlay.classList.remove("is-hidden");
+  loadingOverlay.setAttribute("aria-busy", "true");
+  loadingStatus.textContent = reason === "audio" ? "Buffering audio…" : "Buffering playback…";
+  updatePlaybackBufferProgress();
+}
+
+function updatePlaybackBufferProgress() {
+  if (!playbackBuffering || !meta) return;
+  let value;
+  if (bufferingReason === "audio") {
+    value = Math.min(100, Math.round(bufferedAudioSeconds() / audioResumeBufferSeconds * 100));
+  } else {
+    const target = frameForTime(visualOffset);
+    const needed = Math.min(resumeBufferFrames, meta.frames - target);
+    const available = availableFramesFrom(target, needed);
+    value = needed > 0 ? Math.round(available / needed * 100) : 100;
+  }
+  loadingBar.style.width = `${value}%`;
+  loadingPercent.textContent = `${value}%`;
+  loadingProgress.setAttribute("aria-valuenow", String(value));
+}
+
+function resumeBufferedPlayback() {
+  if (!playbackBuffering || !meta) return;
+  const target = frameForTime(visualOffset);
+  const needed = Math.min(resumeBufferFrames, meta.frames - target);
+  if (availableFramesFrom(target, needed) < needed) {
+    updatePlaybackBufferProgress();
+    return;
+  }
+  if (
+    bufferingReason === "audio"
+    && bufferedAudioSeconds() < audioResumeBufferSeconds
+    && audio.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA
+  ) {
+    updatePlaybackBufferProgress();
+    return;
+  }
+
+  playbackBuffering = false;
+  drawFrame(target);
+  loadingOverlay.setAttribute("aria-busy", "false");
+  loadingOverlay.classList.add("is-hidden");
+  if (!resumeAfterBuffering) return;
+
+  visualStartedAt = performance.now();
+  visualPlaying = true;
+  audio.currentTime = Math.min(visualOffset, effectiveDuration());
+  audio.play().catch(() => {});
+}
 
 function buildDotTile() {
   dotTileCanvas.width = dotTileSize;
@@ -125,7 +355,7 @@ function resizeCanvas() {
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   rebuildDotMask();
-  if (lastDrawn >= 0 && frames.has(lastDrawn)) {
+  if (lastDrawn >= 0 && hasFrame(lastDrawn)) {
     drawFrame(lastDrawn);
   }
 }
@@ -168,9 +398,66 @@ async function loadMeta() {
   sourceCanvas.height = meta.sourceHeight;
   sourceImage = sourceCtx.createImageData(meta.sourceWidth, meta.sourceHeight);
   resizeCanvas();
+  markLoadingReady("metadata");
+}
+
+async function loadFrameStream() {
+  const version = encodeURIComponent(meta.framesVersion || "current");
+  const response = await fetch(`/frames?v=${version}`, {
+    cache: "force-cache",
+    priority: "low",
+  });
+  if (!response.ok) throw new Error(`frames ${response.status}`);
+
+  frameTransport = "http";
+  markLoadingReady("transport");
+  const totalBytes = meta.frames * meta.frameBytes;
+  frameData = new Uint8Array(totalBytes);
+  loadedFrameCount = 0;
+  let received = 0;
+
+  const acceptChunk = (chunk) => {
+    if (received + chunk.byteLength > totalBytes) {
+      throw new Error(`frame stream exceeds ${totalBytes} bytes`);
+    }
+    frameData.set(chunk, received);
+    received += chunk.byteLength;
+    loadedFrameCount = Math.floor(received / meta.frameBytes);
+    updateFrameLoading();
+    resumeBufferedPlayback();
+  };
+
+  if (response.body) {
+    const reader = response.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      acceptChunk(value);
+    }
+  } else {
+    acceptChunk(new Uint8Array(await response.arrayBuffer()));
+  }
+
+  if (received !== totalBytes) {
+    throw new Error(`frame stream length ${received}, want ${totalBytes}`);
+  }
+  frameStreamComplete = true;
+  loadedFrameCount = meta.frames;
+  resumeBufferedPlayback();
+}
+
+function useWebSocketFallback(error) {
+  console.warn("HTTP frame stream failed, using WebSocket fallback", error);
+  frameTransport = "websocket";
+  loadingState.transport = false;
+  if (!appReady) {
+    renderLoadingProgress();
+  }
+  connect();
 }
 
 function connect() {
+  if (frameTransport !== "websocket") return;
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return;
   }
@@ -178,8 +465,18 @@ function connect() {
   socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
   socket.binaryType = "arraybuffer";
   socket.addEventListener("open", () => {
+    if (reconnectTimer) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = 0;
+    }
+    markLoadingReady("transport");
     requestedUntil = 0;
-    requestFrames(frameForTime(playbackTime()), 240, "hello");
+    if (appReady) {
+      const target = frameForTime(playbackTime());
+      requestFrames(Math.max(target, loadedFrameCount), 120, "hello");
+    } else {
+      requestFrames(bufferedInitialFrames(), initialChunkFrames, "hello");
+    }
   });
   socket.addEventListener("message", async (event) => {
     if (typeof event.data === "string") return;
@@ -187,13 +484,20 @@ function connect() {
     receiveChunk(data);
   });
   socket.addEventListener("close", () => {
-    if (playing) {
-      window.setTimeout(connect, 500);
+    loadingState.transport = false;
+    if (!appReady) {
+      renderLoadingProgress();
+    }
+    if ((visualPlaying || playbackBuffering || !appReady) && !reconnectTimer) {
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = 0;
+        connect();
+      }, 750);
     }
   });
 }
 
-function requestFrames(from, chunk = 240, type = "frames", force = false) {
+function requestFrames(from, chunk = 120, type = "frames", force = false) {
   if (!meta || !socket || socket.readyState !== WebSocket.OPEN) return;
   const clampedFrom = Math.max(0, Math.min(meta.frames - 1, from));
   if (!force && clampedFrom < requestedUntil && type !== "hello") return;
@@ -211,24 +515,37 @@ function receiveChunk(buffer) {
   const view = new DataView(buffer);
   const start = view.getUint32(0, true);
   const count = view.getUint16(4, true);
+  if (buffer.byteLength < 6 + count * meta.frameBytes) return;
   let offset = 6;
   for (let i = 0; i < count; i += 1) {
     const frame = new Uint8Array(buffer, offset, meta.frameBytes);
     frames.set(start + i, new Uint8Array(frame));
     offset += meta.frameBytes;
   }
+
+  if (!appReady) {
+    updateFrameLoading();
+    if (hasFrame(0)) {
+      drawFrame(0);
+    }
+    const buffered = bufferedInitialFrames();
+    if (buffered < initialBufferFrames) {
+      requestFrames(
+        buffered,
+        Math.min(initialChunkFrames, initialBufferFrames - buffered),
+        "frames",
+      );
+    }
+    return;
+  }
+
+  resumeBufferedPlayback();
   const target = frameForTime(playbackTime());
-  if (seekTargetFrame !== null && frames.has(seekTargetFrame)) {
+  if (seekTargetFrame !== null && hasFrame(seekTargetFrame)) {
     drawFrame(seekTargetFrame);
     seekTargetFrame = null;
-  } else if (frames.has(target) && (lastDrawn < 0 || visualPlaying)) {
+  } else if (hasFrame(target) && (lastDrawn < 0 || visualPlaying)) {
     drawFrame(target);
-  }
-  if (!autoplayStarted && frames.size > 0) {
-    autoplayStarted = true;
-    audio.muted = false;
-    scheduleSoundPromptCheck();
-    audio.play().catch(() => {});
   }
 }
 
@@ -265,14 +582,16 @@ function hideSoundPromptIfAudible() {
 }
 
 function seekToProgress(progress) {
-  if (!meta) return;
+  if (!meta || !appReady || playbackBuffering) return;
   const duration = effectiveDuration();
   if (duration <= 0) return;
   const targetTime = Math.max(0, Math.min(1, progress)) * duration;
   const targetFrame = frameForTime(targetTime);
   const shouldPlayAudio = visualPlaying || !audio.paused;
 
-  connect();
+  if (frameTransport === "websocket") {
+    connect();
+  }
   endedResting = false;
   audio.currentTime = targetTime;
   visualOffset = targetTime;
@@ -286,8 +605,10 @@ function seekToProgress(progress) {
   }
 
   seekTargetFrame = targetFrame;
-  requestFrames(targetFrame, 240, "frames", true);
-  if (frames.has(targetFrame)) {
+  if (frameTransport === "websocket") {
+    requestFrames(targetFrame, 120, "frames", true);
+  }
+  if (hasFrame(targetFrame)) {
     drawFrame(targetFrame);
     seekTargetFrame = null;
   }
@@ -334,7 +655,7 @@ function frameBackgroundIsBlack(packed, width, height) {
 }
 
 function drawFrame(index) {
-  const packed = frames.get(index);
+  const packed = getFrame(index);
   if (!packed || !meta || !sourceImage) return false;
 
   const pixels = sourceImage.data;
@@ -369,7 +690,6 @@ function drawFrame(index) {
 function finishPlayback() {
   const duration = effectiveDuration();
   const restartTime = duration > 0 ? Math.min(endedPauseTime, duration) : 0;
-  playing = false;
   visualPlaying = false;
   endedResting = true;
   visualOffset = restartTime;
@@ -378,15 +698,17 @@ function finishPlayback() {
   hideSoundPrompt();
 
   seekTargetFrame = frameForTime(restartTime);
-  requestFrames(seekTargetFrame, 240, "frames", true);
-  if (frames.has(seekTargetFrame)) {
+  if (frameTransport === "websocket") {
+    requestFrames(seekTargetFrame, 120, "frames", true);
+  }
+  if (hasFrame(seekTargetFrame)) {
     drawFrame(seekTargetFrame);
     seekTargetFrame = null;
   }
 }
 
 function tick() {
-  if (meta) {
+  if (meta && appReady) {
     const current = playbackTime();
     if (visualPlaying && effectiveDuration() > 0 && current >= effectiveDuration()) {
       finishPlayback();
@@ -395,23 +717,31 @@ function tick() {
       finishPlayback();
     }
     const target = frameForTime(current);
-    if (!frames.has(target)) {
-      requestFrames(target, 240);
+    if (!hasFrame(target)) {
+      if (frameTransport === "websocket") {
+        requestFrames(target, 120);
+      }
+      showPlaybackBuffering(current);
+    } else if (playbackBuffering) {
+      resumeBufferedPlayback();
     } else if (target !== lastDrawn) {
       drawFrame(target);
       if (target === seekTargetFrame) {
         seekTargetFrame = null;
       }
     }
-    if (target + 120 > requestedUntil) {
-      requestFrames(requestedUntil, 240);
+    if (frameTransport === "websocket" && target + 90 > requestedUntil) {
+      requestFrames(requestedUntil, 120);
     }
   }
   requestAnimationFrame(tick);
 }
 
 async function togglePlayback() {
-  connect();
+  if (!appReady || playbackBuffering) return;
+  if (frameTransport === "websocket") {
+    connect();
+  }
   audio.muted = false;
   hideSoundPrompt(true);
   if (visualPlaying) {
@@ -435,7 +765,10 @@ async function togglePlayback() {
 }
 
 async function playSoundFromPrompt() {
-  connect();
+  if (!appReady || playbackBuffering) return;
+  if (frameTransport === "websocket") {
+    connect();
+  }
   audio.muted = false;
   if (endedResting) {
     endedResting = false;
@@ -450,7 +783,11 @@ async function playSoundFromPrompt() {
 }
 
 audio.addEventListener("play", () => {
-  playing = true;
+  if (audioWaitingTimer) {
+    window.clearTimeout(audioWaitingTimer);
+    audioWaitingTimer = 0;
+  }
+  if (playbackBuffering) return;
   visualPlaying = true;
   if (initialSoundCheckComplete) {
     hideSoundPrompt();
@@ -458,7 +795,6 @@ audio.addEventListener("play", () => {
 });
 
 audio.addEventListener("pause", () => {
-  playing = false;
   if (audio.currentTime > 0 && audio.currentTime < effectiveDuration()) {
     visualOffset = audio.currentTime;
   }
@@ -469,6 +805,68 @@ audio.addEventListener("ended", () => {
 });
 
 audio.addEventListener("volumechange", hideSoundPromptIfAudible);
+
+function checkAudioReady() {
+  if (loadingState.audio || audio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) return;
+  if (!audioCanPlayAt) {
+    audioCanPlayAt = performance.now();
+  }
+  if (
+    bufferedAudioSeconds() >= startupAudioBufferSeconds
+    || performance.now() - audioCanPlayAt >= maxAudioBufferWaitMs
+  ) {
+    if (audioReadyTimer) {
+      window.clearTimeout(audioReadyTimer);
+      audioReadyTimer = 0;
+    }
+    markLoadingReady("audio");
+    return;
+  }
+  if (!audioReadyTimer) {
+    audioReadyTimer = window.setTimeout(() => {
+      audioReadyTimer = 0;
+      checkAudioReady();
+    }, 250);
+  }
+}
+
+function handleAudioProgress() {
+  checkAudioReady();
+  if (playbackBuffering && bufferingReason === "audio") {
+    resumeBufferedPlayback();
+  }
+}
+
+audio.addEventListener("loadeddata", handleAudioProgress);
+audio.addEventListener("canplay", handleAudioProgress);
+audio.addEventListener("progress", handleAudioProgress);
+audio.addEventListener("waiting", () => {
+  if (!appReady || !visualPlaying || playbackBuffering || audioWaitingTimer) return;
+  const stalledAt = audio.currentTime;
+  audioWaitingTimer = window.setTimeout(() => {
+    audioWaitingTimer = 0;
+    if (
+      appReady
+      && visualPlaying
+      && !playbackBuffering
+      && !audio.paused
+      && audio.currentTime - stalledAt < 0.05
+      && bufferedAudioSeconds() < audioResumeBufferSeconds
+      && audio.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA
+    ) {
+      showPlaybackBuffering(audio.currentTime, "audio");
+    }
+  }, 500);
+});
+audio.addEventListener("error", () => {
+  if (!appReady) {
+    showLoadingError("Audio could not be loaded.");
+  }
+});
+
+loadingRetry.addEventListener("click", () => {
+  window.location.reload();
+});
 
 soundPrompt.addEventListener("click", (event) => {
   event.stopPropagation();
@@ -531,17 +929,35 @@ if (window.visualViewport) {
 }
 
 syncViewportSize(viewport());
+renderLoadingProgress();
+if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+  audioCanPlayAt = performance.now();
+  checkAudioReady();
+} else {
+  audio.load();
+}
 
 loadMeta()
   .then(() => {
-    visualStartedAt = performance.now();
     requestAnimationFrame(tick);
-    connect();
+    loadFrameStream().catch(useWebSocketFallback);
   })
   .catch((error) => {
     console.error(error);
+    showLoadingError("Playback data could not be loaded.");
   });
 
 buildDotTile();
 
 window.badAppleSizing = { calculateCanvasSize, frameBackgroundIsBlack, stageViewport, viewport };
+window.badApplePlaybackState = () => ({
+  appReady,
+  buffering: playbackBuffering,
+  frameTransport,
+  loadedFrames: loadedFrameCount + frames.size,
+  streamComplete: frameStreamComplete,
+  lastDrawn,
+  visualPlaying,
+  audioPaused: audio.paused,
+  audioTime: audio.currentTime,
+});

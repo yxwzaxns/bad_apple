@@ -2,12 +2,14 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,9 +17,10 @@ import (
 )
 
 type Server struct {
-	webFS fs.FS
-	audio []byte
-	store *FrameStore
+	webFS      fs.FS
+	audio      []byte
+	store      *FrameStore
+	framesGzip []byte
 }
 
 type WSRequest struct {
@@ -32,16 +35,57 @@ type WSRequest struct {
 }
 
 func New(webFS fs.FS, audio []byte, store *FrameStore) *Server {
-	return &Server{webFS: webFS, audio: audio, store: store}
+	return &Server{
+		webFS:      webFS,
+		audio:      audio,
+		store:      store,
+		framesGzip: gzipFrames(store.data),
+	}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/audio", s.handleAudio)
+	mux.HandleFunc("/frames", s.handleFrames)
 	mux.HandleFunc("/meta", s.handleMeta)
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.Handle("/", http.FileServer(http.FS(s.webFS)))
 	return mux
+}
+
+func gzipFrames(data []byte) []byte {
+	var buf bytes.Buffer
+	writer := gzip.NewWriter(&buf)
+	if _, err := writer.Write(data); err != nil {
+		panic(fmt.Sprintf("gzip frames: %v", err))
+	}
+	if err := writer.Close(); err != nil {
+		panic(fmt.Sprintf("close gzip frames: %v", err))
+	}
+	return buf.Bytes()
+}
+
+func (s *Server) handleFrames(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("ETag", `"`+s.store.version+`"`)
+	w.Header().Set("Vary", "Accept-Encoding")
+
+	data := s.store.data
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		data = s.framesGzip
+		w.Header().Set("Content-Encoding", "gzip")
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(data)
 }
 
 func (s *Server) Serve(addr string) error {
@@ -74,7 +118,9 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true,
+		InsecureSkipVerify:   true,
+		CompressionMode:      websocket.CompressionContextTakeover,
+		CompressionThreshold: 1024,
 	})
 	if err != nil {
 		log.Printf("websocket accept: %v", err)

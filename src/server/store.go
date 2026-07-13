@@ -2,7 +2,9 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 
@@ -16,17 +18,19 @@ const (
 )
 
 type FrameStore struct {
-	meta extractor.Metadata
-	data []byte
+	meta    extractor.Metadata
+	data    []byte
+	version string
 }
 
 type MetaResponse struct {
-	SourceWidth  uint32  `json:"sourceWidth"`
-	SourceHeight uint32  `json:"sourceHeight"`
-	Frames       uint32  `json:"frames"`
-	DurationMS   uint32  `json:"durationMs"`
-	FPS          float64 `json:"fps"`
-	FrameBytes   uint32  `json:"frameBytes"`
+	SourceWidth   uint32  `json:"sourceWidth"`
+	SourceHeight  uint32  `json:"sourceHeight"`
+	Frames        uint32  `json:"frames"`
+	DurationMS    uint32  `json:"durationMs"`
+	FPS           float64 `json:"fps"`
+	FrameBytes    uint32  `json:"frameBytes"`
+	FramesVersion string  `json:"framesVersion"`
 }
 
 func NewFrameStore(raw []byte) (*FrameStore, error) {
@@ -47,17 +51,23 @@ func NewFrameStore(raw []byte) (*FrameStore, error) {
 	if int64(len(data)) != want {
 		return nil, fmt.Errorf("invalid frame payload length: got %d, want %d", len(data), want)
 	}
-	return &FrameStore{meta: meta, data: data}, nil
+	sum := sha256.Sum256(data)
+	return &FrameStore{
+		meta:    meta,
+		data:    data,
+		version: hex.EncodeToString(sum[:]),
+	}, nil
 }
 
 func (s *FrameStore) Meta() MetaResponse {
 	return MetaResponse{
-		SourceWidth:  s.meta.SourceWidth,
-		SourceHeight: s.meta.SourceHeight,
-		Frames:       s.meta.FrameCount,
-		DurationMS:   s.meta.DurationMS,
-		FPS:          s.meta.FPS,
-		FrameBytes:   s.meta.FrameBytes,
+		SourceWidth:   s.meta.SourceWidth,
+		SourceHeight:  s.meta.SourceHeight,
+		Frames:        s.meta.FrameCount,
+		DurationMS:    s.meta.DurationMS,
+		FPS:           s.meta.FPS,
+		FrameBytes:    s.meta.FrameBytes,
+		FramesVersion: s.version,
 	}
 }
 

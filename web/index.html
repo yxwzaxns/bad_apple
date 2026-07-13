@@ -9,6 +9,25 @@
   </head>
   <body>
     <main class="stage">
+      <section id="loadingOverlay" class="loading-overlay" role="status" aria-live="polite" aria-busy="true">
+        <div class="loading-panel">
+          <p class="loading-title">BAD APPLE</p>
+          <p id="loadingStatus" class="loading-status">Initializing…</p>
+          <div
+            id="loadingProgress"
+            class="loading-progress"
+            role="progressbar"
+            aria-label="Loading progress"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+          >
+            <span id="loadingBar" class="loading-bar"></span>
+          </div>
+          <p id="loadingPercent" class="loading-percent">0%</p>
+          <button id="loadingRetry" class="loading-retry" type="button" hidden>Retry</button>
+        </div>
+      </section>
       <div id="screenWrap" class="screen-wrap">
         <canvas id="screen"></canvas>
         <button id="soundPrompt" class="sound-prompt" type="button" aria-label="Play sound" hidden>
